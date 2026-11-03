@@ -92,6 +92,42 @@ orange.
 If a light has never had colour points measured, saturated colours pass through
 with their hue untouched and only brightness is corrected.
 
+### Whites from the light's own white LEDs (optional)
+
+By default a colour light gets every white as an RGB mix of its colour LEDs.
+That is what lets a white be corrected for green/magenta tint, but an RGBWW
+fixture's phosphor white LEDs are never used: its whites come out dimmer and
+with poorer colour rendering than it can do.
+
+**Details → Whites → The light's own white LEDs** (or `white_mode: kelvin` in
+the entry's options, or the `set_white_mode` service) sends whites as a colour
+temperature instead, corrected for warm/cool and brightness. The trade-off:
+whites can no longer be corrected for green/magenta tint, so the dialog and auto
+mode drop that axis on those steps. Every white goes to the white LEDs, even
+one outside their colour-temperature range: 2000 K on a strip whose whites stop
+at 2700 K comes out as its warmest white, corrected for brightness. An RGB mix
+could get warmer, but a light that shows either its colour or its white LEDs,
+never both, makes a much dimmer and poorer white that way. Only RGB requests
+are sent as RGB. Each white point records which way it was measured, and a
+white is only corrected from points measured the same way. Colours are not
+affected.
+
+For a light whose RGB whites are good enough, **The light's own white LEDs, RGB
+beyond their range** (`white_mode: kelvin_rgb`) sends whites outside the white
+LEDs' range as RGB instead, with tint, so they reach the colour temperature
+asked for.
+
+**After switching, run a white calibration again** (Quick is enough to start).
+The stored points are kept, but whites now sent the other way have nothing
+measured for them and go uncorrected until they are. A notification says so,
+the Details dialog shows it, and the status sensor's `white_rerun_needed`
+attribute is true until whites have been measured in the new mode. Switching
+back clears it.
+
+Only colour lights with a white channel (a `color_temp` or `rgbww` mode) are
+affected; a tunable-white light is always driven by colour temperature, and an
+RGB-only one always by RGB.
+
 ## Entities
 
 Per calibrated light:
@@ -202,6 +238,7 @@ All take an `entry_id`.
 | `set_reference` | Change the reference light |
 | `clear_profile` | Discard the profile, leaving the light uncorrected |
 | `copy_profile` | Replace one light's calibration with another's |
+| `set_white_mode` | `rgb` (default) or `kelvin`: how a colour light is sent whites |
 
 ## Developing
 

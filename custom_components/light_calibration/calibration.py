@@ -10,9 +10,14 @@ Two kinds of point:
 Whites are corrected along the blackbody curve; colours around the hue wheel.
 They are stored in one list and told apart by a ``type`` key, which defaults to
 white so profiles written before colour calibration existed still load.
+
+A white point also records its ``route``: whether the fixture was sent an RGB
+colour or a colour temperature while it was measured (see ``white_route``).
+Points without one were measured as RGB.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 
 from .color_math import (
@@ -32,10 +37,140 @@ from .color_math import (
     rgb_to_hs,
     rgb_to_kelvin,
 )
-from .const import TINT_MAX, TINT_MIN
+from .const import (
+    CONF_POINTS,
+    CONF_WHITE_MODE,
+    CONF_WHITES_MEASURED_MODE,
+    TINT_MAX,
+    TINT_MIN,
+    WHITE_MODE_KELVIN,
+    WHITE_MODE_KELVIN_RGB,
+    WHITE_MODE_RGB,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 TYPE_WHITE = "white"
 TYPE_COLOR = "color"
+
+# How a white is sent to a colour-capable fixture. Stored on every white point,
+# because a correction measured on one route says nothing about the other: the
+# white LEDs and an RGB mix are different light sources.
+ROUTE_RGB = "rgb"
+ROUTE_KELVIN = "kelvin"
+
+
+def white_route(
+    white_mode: str | None,
+    kelvin: float,
+    target_ct_range: tuple[int, int] | None,
+    color_capable: bool,
+    has_white_channel: bool = True,
+) -> str:
+    """How a white request at ``kelvin`` is sent to the target.
+
+    The one routing rule, used by the light and by calibration alike, so a
+    calibration step measures exactly what the light will send later.
+
+    * A target with no colour mode only takes a kelvin.
+    * In ``kelvin`` mode a colour-capable target gets its own white LEDs for
+      every white, clamped to their range: a 2000K request on a strip whose
+      whites stop at 2700K goes out as its warmest white. An RGB mix could
+      reach 2000K, but on a fixture that lights either its colour or its
+      white LEDs, never both, that white is a fraction as bright and renders
+      worse -- a white a little too cool beats one that is dim and off.
+      Only an RGB request is sent as RGB.
+    * ``kelvin_rgb`` mode is the same inside the range (edges included) and
+      RGB outside it, for a light whose RGB whites are good enough to reach
+      what its white LEDs cannot. An unreported range counts as inside -- the
+      fixture clamps on its own.
+    * Otherwise -- the default -- every white goes as RGB, as it always has.
+      So does a fixture with no white channel (``has_white_channel`` False:
+      RGB/HS/XY only), where core would turn a kelvin back into RGB anyway.
+
+    Routed on the *requested* kelvin, never the offset one: an offset that
+    pushes 2710K below a 2700K floor must not flip the route back and forth as
+    the profile is re-fitted.
+    """
+    if not color_capable:
+        return ROUTE_KELVIN
+    if white_mode not in (WHITE_MODE_KELVIN, WHITE_MODE_KELVIN_RGB) or not has_white_channel:
+        return ROUTE_RGB
+    if white_mode == WHITE_MODE_KELVIN or target_ct_range is None:
+        return ROUTE_KELVIN
+    low, high = target_ct_range
+    return ROUTE_KELVIN if low <= kelvin <= high else ROUTE_RGB
+
+
+def clamp_kelvin(kelvin: float, ct_range: tuple[int, int] | None = None) -> int:
+    """A kelvin command, kept inside the fixture's own range when it is known."""
+    low, high = MIN_KELVIN, MAX_KELVIN
+    if ct_range:
+        low, high = max(low, ct_range[0]), min(high, ct_range[1])
+    return int(round(clamp(kelvin, low, high)))
+
+
+def white_command(
+    kelvin: float,
+    brightness: float,
+    route: str,
+    offset: float = 0.0,
+    tint: float = 0.0,
+    ct_range: tuple[int, int] | None = None,
+) -> dict:
+    """light.turn_on data for a white with a given correction, on one route.
+
+    RGB: the corrected colour, with the tint's own brightness taken back out so
+    moving the tint does not move how bright the light looks -- the two axes
+    have to be judgeable one at a time. Kelvin: the offset colour temperature,
+    kept inside the fixture's range; there is no tint to apply.
+    """
+    if route == ROUTE_RGB:
+        out = brightness / corrected_brightness_factor(kelvin, offset, tint)
+        return {
+            "rgb_color": list(corrected_rgb(kelvin, offset, tint)),
+            "brightness_pct": int(round(clamp(out, 1, 100))),
+        }
+    return {
+        "color_temp_kelvin": clamp_kelvin(kelvin + offset, ct_range),
+        "brightness_pct": int(round(clamp(brightness, 1, 100))),
+    }
+
+
+def whites_need_rerun(data: dict, color_capable: bool = True) -> bool:
+    """Whether the stored whites were measured in a different white mode.
+
+    They are kept -- colours stay valid, and the profile still uses whichever
+    points match each route -- but a white the new mode sends differently has
+    no correction until it is measured again. A tunable-white target has only
+    one way to show a white, so the option changes nothing for it.
+    """
+    if not color_capable or not count_points(data.get(CONF_POINTS))[0]:
+        return False
+    measured = data.get(CONF_WHITES_MEASURED_MODE, WHITE_MODE_RGB)
+    return measured != data.get(CONF_WHITE_MODE, WHITE_MODE_RGB)
+
+
+def white_rerun_notification_id(entry_id: str) -> str:
+    """The persistent notification asking for an entry's whites to be re-measured.
+
+    Raised by the options flow when white_mode changes, dismissed by the
+    session once whites have been measured in the new mode.
+    """
+    return f"light_calibration_{entry_id}_white_rerun"
+
+
+def with_white_mode(data: dict, mode: str) -> dict:
+    """Entry data with ``white_mode`` set. The points are left as they are.
+
+    The mode the stored whites were measured in is pinned first, so
+    whites_need_rerun can tell afterwards. An entry from before the option has
+    no record of it, and was measured in RGB.
+    """
+    out = {**data, CONF_WHITE_MODE: mode}
+    if CONF_WHITES_MEASURED_MODE not in data and count_points(data.get(CONF_POINTS))[0]:
+        out[CONF_WHITES_MEASURED_MODE] = data.get(CONF_WHITE_MODE, WHITE_MODE_RGB)
+    return out
 
 # The six hue anchors, evenly spaced around the wheel.
 COLOR_HUES = [0, 60, 120, 180, 240, 300]
@@ -104,6 +239,9 @@ class CalibrationPoint:
     kelvin_offset: float = 0.0
     tint: float = 0.0
     brightness_actual: float = 0.0
+    # How the target was driven while this was measured (ROUTE_RGB or
+    # ROUTE_KELVIN). Points from before routes existed were all RGB.
+    route: str = ROUTE_RGB
 
     def __post_init__(self) -> None:
         if not self.brightness_actual:
@@ -124,6 +262,7 @@ class CalibrationPoint:
             kelvin_offset=float(data.get("kelvin_offset", 0.0)),
             tint=float(data.get("tint", 0.0)),
             brightness_actual=float(data.get("brightness_actual", data["brightness"])),
+            route=data.get("route") or ROUTE_RGB,
         )
 
 
@@ -306,6 +445,8 @@ class CalibrationProfile:
     ) -> None:
         self.points = points
         self.color_points = color_points or []
+        # Routes already reported as having no white points, so it is said once.
+        self._missing_routes: set[str] = set()
 
     # ---------------------------------------------------------------- storage
     def as_list(self) -> list[dict]:
@@ -334,17 +475,45 @@ class CalibrationProfile:
         return bool(self.color_points)
 
     # ---------------------------------------------------------- interpolation
-    def correction(self, kelvin: float, brightness: float) -> tuple[float, float, float]:
-        """(kelvin_offset, tint, brightness_scale) for a white request."""
-        if not self.points:
+    def white_points(self, route: str | None = None) -> list[CalibrationPoint]:
+        """The white points measured on ``route``; None means all of them."""
+        if route is None:
+            return self.points
+        return [p for p in self.points if p.route == route]
+
+    def correction(
+        self, kelvin: float, brightness: float, route: str | None = None
+    ) -> tuple[float, float, float]:
+        """(kelvin_offset, tint, brightness_scale) for a white request.
+
+        ``route`` restricts the fit to points measured on that route: what the
+        white LEDs needed says nothing about what the RGB mix needs, and the
+        other way round. Tint only exists on the RGB route. None uses every
+        point, which is right for a tunable-white target -- it has one route,
+        and its older points were stored without saying so.
+        """
+        points = self.white_points(route)
+        if not points:
+            if self.points and route not in self._missing_routes:
+                self._missing_routes.add(route)
+                _LOGGER.info(
+                    "No white points measured on the %s route yet, so those whites "
+                    "are sent uncorrected; re-run the whites to measure them", route,
+                )
             return (0.0, 0.0, 1.0)
+        tint = (
+            0.0 if route == ROUTE_KELVIN
+            else self._fit(points, kelvin, brightness, lambda p: p.tint)
+        )
         return (
-            self._fit(kelvin, brightness, lambda p: p.kelvin_offset),
-            self._fit(kelvin, brightness, lambda p: p.tint),
-            self._fit(kelvin, brightness, lambda p: p.brightness_scale),
+            self._fit(points, kelvin, brightness, lambda p: p.kelvin_offset),
+            tint,
+            self._fit(points, kelvin, brightness, lambda p: p.brightness_scale),
         )
 
-    def _fit(self, kelvin: float, brightness: float, value) -> float:
+    def _fit(
+        self, points: list[CalibrationPoint], kelvin: float, brightness: float, value
+    ) -> float:
         """Distance-weighted local linear fit over the (kelvin, brightness) plane.
 
         Plain inverse-distance weighting has zero gradient at every measured
@@ -359,7 +528,6 @@ class CalibrationProfile:
         curved response -- and no correction anybody measured lives out there.
         Holding the last measured value is bounded and continuous.
         """
-        points = self.points
         if len(points) == 1:
             return value(points[0])
 
@@ -451,8 +619,11 @@ class CalibrationProfile:
     def command_for_kelvin(
         self, kelvin: float, brightness: float
     ) -> tuple[tuple[int, int, int], int]:
-        """Translate a white request into what the fixture should be sent."""
-        offset, tint, scale = self.correction(kelvin, brightness)
+        """Translate a white request into the RGB the fixture should be sent.
+
+        Corrected from the RGB-route points only.
+        """
+        offset, tint, scale = self.correction(kelvin, brightness, ROUTE_RGB)
         # Dividing by the tint's own brightness keeps the two axes independent:
         # a tinted white is delivered at the level that was asked for, not the
         # level the tint happened to bring with it.
@@ -460,20 +631,48 @@ class CalibrationProfile:
         return corrected_rgb(kelvin, offset, tint), int(round(clamp(out, 1, 100)))
 
     def kelvin_command_for_kelvin(
-        self, kelvin: float, brightness: float
+        self,
+        kelvin: float,
+        brightness: float,
+        route: str | None = None,
+        ct_range: tuple[int, int] | None = None,
     ) -> tuple[int, int]:
-        """Translate a white request for a fixture that can only take a kelvin.
+        """Translate a white request into a kelvin for the fixture's white LEDs.
 
-        Tint is dropped, because a tunable-white fixture cannot render off the
-        blackbody curve and there is nothing for it to apply to. The colour
-        temperature offset and the brightness scale both still work, which is
-        the part of a white miscalibration such a fixture can actually have.
+        Tint is dropped: white LEDs cannot render off the blackbody curve, so
+        there is nothing for it to apply to. The colour temperature offset and
+        the brightness scale both still work, which is the part of a white
+        miscalibration a white channel can actually have.
+
+        ``route`` is None for a tunable-white fixture (every point counts) and
+        ROUTE_KELVIN for a colour fixture's white LEDs, whose correction must
+        not borrow from points measured on its RGB mix. ``ct_range`` keeps the
+        offset kelvin inside what the fixture reports it can do.
         """
-        offset, _tint, scale = self.correction(kelvin, brightness)
+        offset, _tint, scale = self.correction(kelvin, brightness, route)
         return (
-            int(round(clamp(kelvin + offset, MIN_KELVIN, MAX_KELVIN))),
+            clamp_kelvin(kelvin + offset, ct_range),
             int(round(clamp(brightness * scale, 1, 100))),
         )
+
+    def command_for_white(
+        self,
+        kelvin: float,
+        brightness: float,
+        route: str,
+        ct_range: tuple[int, int] | None = None,
+        color_capable: bool = True,
+    ) -> dict:
+        """light.turn_on data for a white request on the route white_route chose."""
+        if route == ROUTE_RGB:
+            rgb, out = self.command_for_kelvin(kelvin, brightness)
+            return {"rgb_color": list(rgb), "brightness_pct": out}
+        out_k, out = self.kelvin_command_for_kelvin(
+            kelvin, brightness,
+            route=ROUTE_KELVIN if color_capable else None,
+            ct_range=ct_range if color_capable else None,
+        )
+        return {"color_temp_kelvin": out_k, "brightness_pct": out}
 
     def command_for_rgb(
         self, rgb: tuple[int, int, int], brightness: float
@@ -492,7 +691,7 @@ class CalibrationProfile:
         hue, sat = rgb_to_hs(rgb)
 
         if not self.color_points:
-            _, _, scale = self.correction(rgb_to_kelvin(rgb), brightness)
+            _, _, scale = self.correction(rgb_to_kelvin(rgb), brightness, ROUTE_RGB)
             return rgb, int(round(clamp(brightness * scale, 1, 100)))
 
         shift, sat_scale, bright_scale = self.color_correction(hue, brightness)

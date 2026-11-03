@@ -177,10 +177,12 @@ class LightCalibrationDialog extends HTMLElement {
     const a = this._attrs;
     if (a.step_type === "color") return COLOR_SLIDERS;
     // Tint is a green/magenta shift off the blackbody curve, which a
-    // tunable-white fixture cannot render at all.
-    return a.supports_color === false
-      ? WHITE_SLIDERS.filter((s) => s.key !== "green_magenta")
-      : WHITE_SLIDERS;
+    // tunable-white fixture cannot render at all, and neither can a colour
+    // fixture's own white LEDs (white_tint false: the kelvin white mode).
+    // Without white_tint (an older backend), supports_color decides as before.
+    const tint = a.white_tint === true || a.white_tint === false
+      ? a.white_tint : a.supports_color !== false;
+    return tint ? WHITE_SLIDERS : WHITE_SLIDERS.filter((s) => s.key !== "green_magenta");
   }
 
   open(entityId) {
@@ -1061,6 +1063,15 @@ class LightCalibrationPanel extends HTMLElement {
           <label class="tiny">Reference light</label>
           <div class="dvalue drefname"></div>
         </div>
+        <div class="section dwhite" hidden>
+          <label class="tiny" for="dwhitemode">Whites</label>
+          <select id="dwhitemode" class="dwhitemode">
+            <option value="rgb">Mixed from the colour LEDs (default, corrects tint)</option>
+            <option value="kelvin">The light's own white LEDs (colour temperature)</option>
+            <option value="kelvin_rgb">The light's own white LEDs, RGB beyond their range</option>
+          </select>
+          <div class="meta dwhitenote"></div>
+        </div>
         <div class="section dcopy" hidden>
           <label class="tiny">Copy calibration from</label>
           <div class="dcopypick"></div>
@@ -1094,6 +1105,8 @@ class LightCalibrationPanel extends HTMLElement {
     });
     details.querySelector(".dclear").addEventListener(
       "click", () => this._clearProfile(this._detailsEntity));
+    details.querySelector(".dwhitemode").addEventListener(
+      "change", (e) => this._setWhiteMode(this._detailsEntity, e.target));
     details.querySelector(".dshow").addEventListener(
       "click", () => this._toggleMeasurements(details));
 
@@ -1684,6 +1697,27 @@ class LightCalibrationPanel extends HTMLElement {
     });
   }
 
+  /* The white_mode option (the backend's set_white_mode service; the options
+     form has the same switch). Whites already measured stay stored, but the
+     ones the new mode sends differently need measuring again -- the note
+     under the control says so until they are. */
+  _setWhiteMode(entity, control) {
+    const a = this._hass.states[entity].attributes;
+    if (control.value === (a.white_mode || "rgb")) return;
+    if (a.stored_whites > 0 && !window.confirm(
+      `Switch how ${this._name(a.calibrating)} shows whites?
+
+` +
+      `The whites measured so far were measured the other way, so whites ` +
+      `sent the new way are not corrected until you run a white calibration ` +
+      `again. Colours are not affected.`)) {
+      control.value = a.white_mode || "rgb";
+      return;
+    }
+    this._hass.callService("light_calibration", "set_white_mode",
+      { entry_id: a.entry_id, white_mode: control.value });
+  }
+
   _clearProfile(entity) {
     const a = this._hass.states[entity].attributes;
     if (!window.confirm(
@@ -1783,6 +1817,24 @@ class LightCalibrationPanel extends HTMLElement {
         },
       });
     }
+
+    // Only a colour light has two ways to show a white. Hidden when the
+    // backend does not report the option at all.
+    const whites = d.querySelector(".dwhite");
+    whites.hidden = a.supports_color === false || a.white_mode === undefined;
+    const mode = d.querySelector(".dwhitemode");
+    if (!mode.matches(":focus")) {   // not under an open menu
+      mode.value = a.white_mode || "rgb";
+    }
+    d.querySelector(".dwhitenote").textContent = a.white_rerun_needed
+      ? "The stored whites were measured the other way: run a white calibration again."
+      : a.white_mode === "kelvin"
+        ? "Brighter whites with better colour rendering, but no green/magenta " +
+          "correction. A white beyond their range is shown as their nearest one."
+        : a.white_mode === "kelvin_rgb"
+          ? "Brighter whites with better colour rendering, but no green/magenta " +
+            "correction. A white beyond their range is mixed from the colour LEDs."
+          : "";
 
     d.querySelector(".dmeasure").hidden = !calibrated;
     d.querySelector(".dclear").hidden = !calibrated;

@@ -47,3 +47,35 @@ def is_calibratable(modes: set[str]) -> bool:
     brightness-only fixture has nothing this integration can calibrate.
     """
     return bool(modes & OFF_CURVE_MODES) or ColorMode.COLOR_TEMP in modes
+
+
+def kelvin_range(hass: HomeAssistant, entity_id: str) -> tuple[int, int] | None:
+    """The colour temperatures the fixture's own white channel reports.
+
+    None when it is not around or does not say. The white routing treats an
+    unknown range as "the fixture will clamp", not as "it has no whites".
+    """
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    low = state.attributes.get("min_color_temp_kelvin")
+    high = state.attributes.get("max_color_temp_kelvin")
+    if not low or not high:
+        return None
+    return int(low), int(high)
+
+
+# The modes that drive a fixture's own white LEDs from a colour temperature.
+WHITE_CHANNEL_MODES = frozenset({ColorMode.COLOR_TEMP, ColorMode.RGBWW})
+
+
+def has_white_channel(hass: HomeAssistant, entity_id: str) -> bool:
+    """Whether a colour temperature reaches white LEDs rather than an RGB mix.
+
+    An RGB-only fixture accepts color_temp_kelvin too, but core converts it to
+    an RGB value on the way -- the correction is lost and nothing is gained --
+    so the kelvin white mode leaves such a fixture on RGB. Unknown counts as
+    yes, like supports_color.
+    """
+    modes = color_modes(hass, entity_id)
+    return not modes or bool(modes & WHITE_CHANNEL_MODES)

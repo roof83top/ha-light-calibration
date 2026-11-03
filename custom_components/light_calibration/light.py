@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 
 from . import capability
-from .calibration import CalibrationProfile
+from .calibration import ROUTE_RGB, CalibrationProfile, white_route
 from .color_math import rgb_to_kelvin, split_level
 from .session import CalibrationSession
 from .const import (
@@ -29,8 +29,10 @@ from .const import (
     CONF_POINTS,
     CONF_REFERENCE,
     CONF_TARGET,
+    CONF_WHITE_MODE,
     DEFAULT_TRANSITION,
     DOMAIN,
+    WHITE_MODE_RGB,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ class CalibratedLight(LightEntity):
         self._entry = entry
         self._target: str = entry.data[CONF_TARGET]
         self._reference: str = entry.data.get(CONF_REFERENCE, "")
+        self._white_mode: str = entry.data.get(CONF_WHITE_MODE, WHITE_MODE_RGB)
         self._profile = CalibrationProfile.from_list(entry.data.get(CONF_POINTS))
         _LOGGER.debug("%s: loaded %d calibration points", entry.title, len(self._profile.points))
 
@@ -208,6 +211,7 @@ class CalibratedLight(LightEntity):
             "calibration_points": len(self._profile.points),
             "calibrated": self._profile.is_calibrated,
             "calibration_applied": bool(self._session.enabled) if self._session else True,
+            "white_mode": self._white_mode,
         }
 
     # ------------------------------------------------------------------ action
@@ -243,14 +247,21 @@ class CalibratedLight(LightEntity):
                 kelvin = kwargs.get(
                     ATTR_COLOR_TEMP_KELVIN, self._attr_color_temp_kelvin or 2700
                 )
-            if color_capable:
-                rgb, out_pct = profile.command_for_kelvin(kelvin, brightness_pct)
-                data[ATTR_RGB_COLOR] = list(rgb)
+            # The same rule calibration measured with: RGB, or -- in the kelvin
+            # white mode, inside the fixture's own range -- its white LEDs.
+            ct_range = capability.kelvin_range(self.hass, self._target)
+            route = white_route(
+                self._white_mode, kelvin, ct_range, color_capable,
+                capability.has_white_channel(self.hass, self._target),
+            )
+            command = profile.command_for_white(
+                kelvin, brightness_pct, route, ct_range, color_capable
+            )
+            out_pct = command.pop("brightness_pct")
+            if route == ROUTE_RGB:
+                data[ATTR_RGB_COLOR] = command["rgb_color"]
             else:
-                out_kelvin, out_pct = profile.kelvin_command_for_kelvin(
-                    kelvin, brightness_pct
-                )
-                data[ATTR_COLOR_TEMP_KELVIN] = out_kelvin
+                data[ATTR_COLOR_TEMP_KELVIN] = command["color_temp_kelvin"]
             self._attr_color_mode = ColorMode.COLOR_TEMP
             self._attr_color_temp_kelvin = int(kelvin)
             self._attr_rgb_color = None

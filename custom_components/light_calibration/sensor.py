@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .calibration import count_points, profile_summary
+from .calibration import count_points, profile_summary, whites_need_rerun
 from .const import CONF_POINTS, DOMAIN
 from .entity import CalibrationControlEntity
 from .session import CalibrationSession
@@ -55,4 +55,10 @@ class CalibrationStatus(CalibrationControlEntity, SensorEntity):
         attrs["stored_colors"] = colors
         attrs["stored_whites"] = whites
         attrs["profile_summary"] = profile_summary(stored)
+        attrs["white_mode"] = self._session.white_mode
+        # Set when white_mode was switched after the whites were measured: the
+        # whites sent the new way have no correction until they are re-run.
+        attrs["white_rerun_needed"] = whites_need_rerun(
+            self._entry.data, self._session.supports_color
+        )
         return attrs

@@ -28,5 +28,31 @@
     "create_entry": {
       "default": "**[Start calibrating &rarr;](/light-calibration)**\n\nThat opens the guided matching straight away -- pick how thorough you want to be and the sliders take over from there.\n\nPause anything that adapts these lights automatically first, or it will re-adapt them while you work. You can also get back here any time from this entry's **Configure** button."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Calibration settings",
+        "description": "Settings for {target} ({points} stored points).",
+        "data": {
+          "reference_entity": "Reference light (the one that looks right)",
+          "white_mode": "How whites are driven",
+          "clear_profile": "Clear the stored calibration"
+        },
+        "data_description": {
+          "white_mode": "Drive whites with the light's own white LEDs (colour temperature). Better brightness and colour rendering; whites can't be corrected for green/magenta tint. A white beyond their range is shown as their nearest one, or as RGB if you choose that. Only affects lights that can show colours. After switching, run a white calibration again: whites measured the other way don't correct the new one. Colours are not affected.",
+          "clear_profile": "Removes every measured point, whites and colours."
+        }
+      }
+    }
+  },
+  "selector": {
+    "white_mode": {
+      "options": {
+        "rgb": "RGB colour mixing (default; corrects tint)",
+        "kelvin": "The light's own white LEDs (colour temperature)",
+        "kelvin_rgb": "The light's own white LEDs, RGB beyond their range"
+      }
+    }
   }
 }

@@ -30,8 +30,12 @@ from .const import (
     CONF_REFERENCE,
     CONF_RENAMED_ID,
     CONF_TARGET,
+    CONF_WHITE_MODE,
     DOMAIN,
+    WHITE_MODE_RGB,
+    WHITE_MODES,
 )
+from .white_mode import async_update_with_white_mode
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -128,7 +132,7 @@ class LightCalibrationConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class LightCalibrationOptionsFlow(OptionsFlow):
-    """Change which light is used as the reference, or clear the profile."""
+    """Change the reference light, how whites are driven, or clear the profile."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -138,7 +142,10 @@ class LightCalibrationOptionsFlow(OptionsFlow):
             data = {**entry.data, CONF_REFERENCE: user_input[CONF_REFERENCE]}
             if user_input.get("clear_profile"):
                 data[CONF_POINTS] = []
-            self.hass.config_entries.async_update_entry(entry, data=data)
+            async_update_with_white_mode(
+                self.hass, entry, data,
+                user_input.get(CONF_WHITE_MODE, WHITE_MODE_RGB),
+            )
             return self.async_create_entry(title="", data={})
 
         stored = len(entry.data.get(CONF_POINTS) or [])
@@ -149,6 +156,16 @@ class LightCalibrationOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_REFERENCE, default=entry.data.get(CONF_REFERENCE)
                     ): _light_selector(),
+                    vol.Required(
+                        CONF_WHITE_MODE,
+                        default=entry.data.get(CONF_WHITE_MODE, WHITE_MODE_RGB),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(WHITE_MODES),
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key=CONF_WHITE_MODE,
+                        )
+                    ),
                     vol.Required("clear_profile", default=False): selector.BooleanSelector(),
                 }
             ),

@@ -173,3 +173,27 @@ copy_profile:
       required: true
       selector:
         text:
+
+set_white_mode:
+  name: Set white mode
+  description: >-
+    How a colour light is sent whites. rgb (the default) mixes them from the
+    colour LEDs, so green/magenta tint can be corrected. kelvin uses the
+    light's own white LEDs (colour temperature) for every white: better
+    brightness and colour rendering, but no tint correction; a white beyond
+    their range is shown as their nearest one. kelvin_rgb is the same, but
+    sends a white beyond their range as RGB. Re-run a white calibration after
+    switching -- whites measured the other way do not correct the new one.
+  fields:
+    entry_id:
+      name: Config entry
+      description: The calibration entry to change.
+      required: true
+      selector:
+        text:
+    white_mode:
+      name: White mode
+      required: true
+      selector:
+        select:
+          options: [rgb, kelvin, kelvin_rgb]

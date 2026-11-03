@@ -27,7 +27,10 @@ from .const import (
     CONF_REFERENCE,
     CONF_RENAMED_ID,
     CONF_TARGET,
+    CONF_WHITES_MEASURED_MODE,
     DOMAIN,
+    WHITE_MODE_RGB,
+    WHITE_MODES,
 )
 from .calibration import (
     DEPTH_POINTS,
@@ -36,6 +39,7 @@ from .calibration import (
     profile_summary,
 )
 from .session import CalibrationSession
+from .white_mode import async_update_with_white_mode
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +70,7 @@ SERVICE_CLEAR = "clear_profile"
 SERVICE_FINISH = "finish_calibration"
 SERVICE_COMPARE = "compare"
 SERVICE_COPY = "copy_profile"
+SERVICE_WHITE_MODE = "set_white_mode"
 
 _ENTRY = vol.Schema({vol.Required("entry_id"): cv.string})
 _ADJUST = _ENTRY.extend(
@@ -80,6 +85,7 @@ _ADJUST = _ENTRY.extend(
 _START = _ENTRY.extend({vol.Optional("depth"): vol.In(list(DEPTH_POINTS))})
 _SET_REFERENCE = _ENTRY.extend({vol.Required("entity_id"): cv.entity_id})
 _COPY = _ENTRY.extend({vol.Required("source_entry_id"): cv.string})
+_WHITE_MODE = _ENTRY.extend({vol.Required("white_mode"): vol.In(WHITE_MODES)})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -263,12 +269,33 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
         hass.config_entries.async_update_entry(
             # Copied, not shared: the two entries must not end up pointing at the
-            # same dicts, or re-running one would quietly edit the other.
-            entry, data={**entry.data, CONF_POINTS: [dict(p) for p in points]}
+            # same dicts, or re-running one would quietly edit the other. The
+            # whites go with the white mode they were measured in, so a copy
+            # onto a light set the other way is flagged for a white re-run.
+            entry, data={
+                **entry.data,
+                CONF_POINTS: [dict(p) for p in points],
+                CONF_WHITES_MEASURED_MODE: source.data.get(
+                    CONF_WHITES_MEASURED_MODE, WHITE_MODE_RGB
+                ),
+            },
         )
         _LOGGER.info(
             "Copied %s's calibration (%s) onto %s",
             source.title, profile_summary(points), entry.title,
+        )
+
+    async def _set_white_mode(call: ServiceCall) -> None:
+        """Drive whites as RGB (the default) or with the light's white LEDs.
+
+        The same as the option in the entry's options form, for the panel: the
+        Configure button opens the panel rather than that form.
+        """
+        entry = hass.config_entries.async_get_entry(call.data["entry_id"])
+        if entry is None or entry.domain != DOMAIN:
+            raise ServiceValidationError("That calibrated light no longer exists")
+        async_update_with_white_mode(
+            hass, entry, dict(entry.data), call.data["white_mode"]
         )
 
     async def _clear(call: ServiceCall) -> None:
@@ -289,6 +316,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_SET_REFERENCE, _set_reference, _SET_REFERENCE),
         (SERVICE_CLEAR, _clear, _ENTRY),
         (SERVICE_COPY, _copy_profile, _COPY),
+        (SERVICE_WHITE_MODE, _set_white_mode, _WHITE_MODE),
     ):
         if not hass.services.has_service(DOMAIN, name):
             hass.services.async_register(DOMAIN, name, handler, schema=schema)

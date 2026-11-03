@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any, Callable
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
@@ -22,21 +23,27 @@ from . import capability
 from .calibration import (
     COLOR_NAMES,
     DEPTH_POINTS,
+    ROUTE_KELVIN,
+    ROUTE_RGB,
     TYPE_COLOR,
     TYPE_WHITE,
     CalibrationPoint,
     CalibrationProfile,
     ColorPoint,
+    white_command,
+    white_rerun_notification_id,
+    white_route,
 )
-from .color_math import (
-    MAX_KELVIN,
-    MIN_KELVIN,
-    clamp,
-    corrected_brightness_factor,
-    corrected_rgb,
-    hs_to_rgb,
+from .color_math import corrected_rgb, hs_to_rgb
+from .const import (
+    CONF_POINTS,
+    CONF_REFERENCE,
+    CONF_TARGET,
+    CONF_WHITE_MODE,
+    CONF_WHITES_MEASURED_MODE,
+    DEFAULT_TRANSITION,
+    WHITE_MODE_RGB,
 )
-from .const import CONF_POINTS, CONF_REFERENCE, CONF_TARGET, DEFAULT_TRANSITION
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,6 +182,63 @@ class CalibrationSession:
         return capability.supports_color(self.hass, self.target)
 
     @property
+    def white_mode(self) -> str:
+        return self.entry.data.get(CONF_WHITE_MODE, WHITE_MODE_RGB)
+
+    def white_route(self, step: dict) -> str:
+        """How the target is sent this white step: the light's own rule.
+
+        Calibration has to measure exactly what the calibrated light will send
+        later, so this is the same white_route call light.py makes.
+        """
+        return white_route(
+            self.white_mode,
+            step["kelvin"],
+            capability.kelvin_range(self.hass, self.target),
+            self.supports_color,
+            capability.has_white_channel(self.hass, self.target),
+        )
+
+    def _white_ct_range(self, route: str) -> tuple[int, int] | None:
+        """The range a kelvin-routed white is clamped to, None for the global limits.
+
+        The fixture's reported range only bounds a colour fixture's white LEDs,
+        as in the light; a tunable white is clamped as it always was.
+        """
+        if self.supports_color and route == ROUTE_KELVIN:
+            return capability.kelvin_range(self.hass, self.target)
+        return None
+
+    @property
+    def white_kelvin_range(self) -> list[int] | None:
+        """The current white step's kelvin clamp, for auto mode's command model.
+
+        Set only where _target_data clamps to the fixture's own range (a
+        colour fixture's white LEDs, range reported); None otherwise.
+        """
+        step = self.current
+        if not step or step["type"] != TYPE_WHITE:
+            return None
+        ct_range = self._white_ct_range(self.white_route(step))
+        return list(ct_range) if ct_range else None
+
+    def _profile_route(self, route: str) -> str | None:
+        """Which stored points correct this route: None (all) on a tunable white."""
+        return route if self.supports_color else None
+
+    @property
+    def white_tint(self) -> bool | None:
+        """Whether the current white step has a green/magenta axis.
+
+        Only an RGB-routed white on a colour fixture does. None on a colour
+        step or with no step, so a reader falls back to supports_color.
+        """
+        step = self.current
+        if not step or step["type"] != TYPE_WHITE:
+            return None
+        return self.supports_color and self.white_route(step) == ROUTE_RGB
+
+    @property
     def step_label(self) -> str:
         if self.verifying:
             return f"{self.verify_index + 1}/{len(self.verify_points)}"
@@ -281,7 +345,10 @@ class CalibrationSession:
             self.saturation = min(100.0, max(0.0, 100.0 * sat_scale))
             self.brightness = min(100.0, max(1.0, step["brightness"] * bright_scale))
         else:
-            offset, tint, scale = profile.correction(step["kelvin"], step["brightness"])
+            offset, tint, scale = profile.correction(
+                step["kelvin"], step["brightness"],
+                self._profile_route(self.white_route(step)),
+            )
             self.warm_cool = offset
             self.tint = tint
             self.brightness = min(100.0, max(1.0, step["brightness"] * scale))
@@ -375,13 +442,17 @@ class CalibrationSession:
                 )
             )
         else:
+            route = self.white_route(step)
             self.results.append(
                 CalibrationPoint(
                     kelvin=step["kelvin"],
                     brightness=step["brightness"],
                     kelvin_offset=self.warm_cool,
-                    tint=self.tint,
+                    # Off the RGB route there is no tint axis; whatever the
+                    # slider carried over from an RGB step was never sent.
+                    tint=self.tint if route == ROUTE_RGB else 0.0,
                     brightness_actual=self.brightness,
+                    route=route,
                 )
             )
         self.index += 1
@@ -479,11 +550,17 @@ class CalibrationSession:
             "Calibration finished for %s: %d measured this run, %d points stored",
             self.target, len(self.results), len(points),
         )
+        data = {**self.entry.data, CONF_POINTS: points}
+        if any(isinstance(r, CalibrationPoint) for r in self.results):
+            # Whites measured in this mode: the "re-measure your whites" flag
+            # that switching white_mode raises is answered.
+            data[CONF_WHITES_MEASURED_MODE] = self.white_mode
+            persistent_notification.async_dismiss(
+                self.hass, white_rerun_notification_id(self.entry.entry_id)
+            )
         await self._async_restore_snapshot()
         self._notify()
-        self.hass.config_entries.async_update_entry(
-            self.entry, data={**self.entry.data, CONF_POINTS: points}
-        )
+        self.hass.config_entries.async_update_entry(self.entry, data=data)
 
     # ----------------------------------------------------------------- apply
     def _reference_data(self, step: dict) -> dict:
@@ -528,35 +605,28 @@ class CalibrationSession:
                 data["brightness_pct"] = int(round(self.brightness))
             return data
 
+        # The route the calibrated light will use for this white: RGB, or a
+        # colour temperature (a tunable-white fixture, or a colour one's white
+        # LEDs in the kelvin white mode). A kelvin is driven directly -- going
+        # via RGB would be converted back by core, losing the offset we are
+        # here to measure. white_command keeps the tint's own brightness out
+        # of an RGB white, so the two sliders can be judged one at a time.
         kelvin = step["kelvin"]
+        route = self.white_route(step)
+        ct_range = self._white_ct_range(route)
         if raw:
-            offset, tint, brightness = 0.0, 0.0, float(step["brightness"])
+            data.update(white_command(
+                kelvin, float(step["brightness"]), route, ct_range=ct_range
+            ))
         elif profile is not None:
-            if self.supports_color:
-                rgb, out = profile.command_for_kelvin(kelvin, step["brightness"])
-                data["rgb_color"] = list(rgb)
-                data["brightness_pct"] = out
-            else:
-                out_k, out = profile.kelvin_command_for_kelvin(kelvin, step["brightness"])
-                data["color_temp_kelvin"] = out_k
-                data["brightness_pct"] = out
-            return data
+            data.update(profile.command_for_white(
+                kelvin, step["brightness"], route, ct_range, self.supports_color
+            ))
         else:
-            offset, tint, brightness = self.warm_cool, self.tint, self.brightness
-
-        if self.supports_color:
-            data["rgb_color"] = list(corrected_rgb(kelvin, offset, tint))
-            # Take the tint's own brightness back out, so moving the tint slider
-            # does not move how bright the light looks. The two axes have to be
-            # judgeable one at a time.
-            brightness /= corrected_brightness_factor(kelvin, offset, tint)
-        else:
-            # Drive the kelvin directly. Going via RGB would be converted back by
-            # core anyway, losing the offset we are here to measure.
-            data["color_temp_kelvin"] = int(
-                round(clamp(kelvin + offset, MIN_KELVIN, MAX_KELVIN))
-            )
-        data["brightness_pct"] = int(round(clamp(brightness, 1, 100)))
+            data.update(white_command(
+                kelvin, self.brightness, route, self.warm_cool,
+                self.tint if route == ROUTE_RGB else 0.0, ct_range,
+            ))
         return data
 
     async def async_apply(self) -> None:
@@ -639,7 +709,7 @@ class CalibrationSession:
             return (255, 167, 87)
         if step["type"] == TYPE_COLOR:
             return hs_to_rgb(step["hue"] + self.hue_shift, self.saturation)
-        tint = self.tint if self.supports_color else 0.0
+        tint = self.tint if self.white_tint else 0.0
         return corrected_rgb(step["kelvin"], self.warm_cool, tint)
 
     def extra_attributes(self) -> dict[str, Any]:
@@ -666,6 +736,15 @@ class CalibrationSession:
             "entry_id": self.entry.entry_id,
             "calibration_enabled": self.enabled,
             "supports_color": self.supports_color,
+            # Per white step: false when this white has no tint axis (a
+            # tunable white, or the white LEDs in the kelvin white mode); None
+            # on a colour step.
+            "white_tint": self.white_tint,
+            "white_route": (
+                self.white_route(step) if step and step["type"] == TYPE_WHITE else None
+            ),
+            # Where that white's colour temperature is clamped (see above).
+            "white_kelvin_range": self.white_kelvin_range,
             "verifying": self.verifying,
             "verify_step": self.verify_index + 1 if self.verifying else None,
             "verify_total": len(self.verify_points) if self.verifying else None,

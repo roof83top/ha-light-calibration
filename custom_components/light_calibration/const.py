@@ -27,3 +27,18 @@ TINT_MAX = 60
 TINT_STEP = 2
 
 DEFAULT_TRANSITION = 0.4
+
+# How a colour-capable target is driven for a white (per entry, Options).
+# "rgb": every white as an RGB colour, so green/magenta tint can be corrected.
+# "kelvin": every white goes to its white LEDs as color_temp_kelvin, clamped
+# to their range; only RGB requests are sent as RGB.
+# "kelvin_rgb": the white LEDs inside their range, RGB beyond it -- for a
+# light whose RGB whites are bright enough to fill the gap.
+CONF_WHITE_MODE = "white_mode"
+WHITE_MODE_RGB = "rgb"
+WHITE_MODE_KELVIN = "kelvin"
+WHITE_MODE_KELVIN_RGB = "kelvin_rgb"
+WHITE_MODES = (WHITE_MODE_RGB, WHITE_MODE_KELVIN, WHITE_MODE_KELVIN_RGB)
+# The white_mode the stored whites were last measured in. Absent means "rgb":
+# every profile written before the option existed was measured that way.
+CONF_WHITES_MEASURED_MODE = "whites_measured_mode"
