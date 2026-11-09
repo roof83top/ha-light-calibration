@@ -22,8 +22,12 @@ FIELD_NEXT = "matches"
 WARM_COOL_MIN = -1200
 WARM_COOL_MAX = 1200
 WARM_COOL_STEP = 25
-TINT_MIN = -60
-TINT_MAX = 60
+# Lopsided on purpose: magenta bottoms out at -100, where green is gone
+# entirely, while a fixture short of green can need it several times over (an
+# OSRAM/LEDVANCE strip's RGB whites needed about +330 by eye). Kept in step
+# with the JS slider definition and services.yaml.
+TINT_MIN = -100
+TINT_MAX = 400
 TINT_STEP = 2
 
 DEFAULT_TRANSITION = 0.4

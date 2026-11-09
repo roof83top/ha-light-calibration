@@ -266,3 +266,34 @@ def test_corrected_rgb_is_the_offset_kelvin_then_the_tint():
 
 def test_corrected_rgb_with_no_correction_is_just_the_kelvin():
     assert cm.corrected_rgb(2700, 0, 0) == cm.kelvin_to_rgb(2700)
+
+
+# The slider runs -100..+400. Both ends are real settings, not just limits.
+
+@pytest.mark.parametrize("kelvin", [2000, 2700, 4000, 6500])
+def test_full_magenta_removes_green_and_nothing_else(kelvin):
+    rgb = cm.kelvin_to_rgb(kelvin)
+    out = cm.apply_tint(rgb, -100)
+    assert out[1] == 0
+    assert out[0] / out[2] == pytest.approx(rgb[0] / rgb[2], rel=0.02)
+
+
+@pytest.mark.parametrize("kelvin", [2000, 2700, 4000, 6500])
+def test_full_green_quintuples_green_in_linear_light(kelvin):
+    rgb = cm.kelvin_to_rgb(kelvin)
+    out = cm.apply_tint(rgb, 400)
+    green = lambda c: cm._to_linear(c[1]) / cm._to_linear(c[0])
+    assert all(0 <= c <= 255 for c in out)
+    if out[0] >= 8:          # red not rounded away, so the ratio means something
+        assert green(out) == pytest.approx(5 * green(rgb), rel=0.05)
+
+
+@pytest.mark.parametrize("kelvin", [2000, 2700, 4000, 6500])
+@pytest.mark.parametrize("tint", [-100, 400])
+def test_the_brightness_factor_holds_at_the_ends_of_the_slider(kelvin, tint):
+    """Positive and finite even with green gone: the command divides by it."""
+    base = cm.relative_luminance(cm.kelvin_to_rgb(kelvin))
+    tinted = cm.relative_luminance(cm.apply_tint(cm.kelvin_to_rgb(kelvin), tint))
+    factor = cm.corrected_brightness_factor(kelvin, 0, tint)
+    assert 0 < factor < 10
+    assert tinted / factor == pytest.approx(base, rel=1e-6)

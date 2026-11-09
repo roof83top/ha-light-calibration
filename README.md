@@ -28,6 +28,10 @@ drag, with no submit button.
 green/magenta (a tint), and brightness. **Colour steps** give you hue shift,
 saturation, and brightness.
 
+The tint runs from -100 (green removed entirely, full magenta) to +400 (five
+times the green). It is lopsided on purpose: some RGB strips' whites come out
+so purple that they need green several times over.
+
 Moving the tint does not change how bright the light looks. Adding green
 genuinely makes a colour brighter — green carries most of what the eye reads as
 brightness — so that is taken back out of the brightness command automatically.
@@ -102,8 +106,8 @@ with poorer colour rendering than it can do.
 **Details → Whites → The light's own white LEDs** (or `white_mode: kelvin` in
 the entry's options, or the `set_white_mode` service) sends whites as a colour
 temperature instead, corrected for warm/cool and brightness. The trade-off:
-whites can no longer be corrected for green/magenta tint, so the dialog and auto
-mode drop that axis on those steps. Every white goes to the white LEDs, even
+whites can no longer be corrected for green/magenta tint, so the dialog drops
+that axis on those steps. Every white goes to the white LEDs, even
 one outside their colour-temperature range: 2000 K on a strip whose whites stop
 at 2700 K comes out as its warmest white, corrected for brightness. An RGB mix
 could get warmer, but a light that shows either its colour or its white LEDs,

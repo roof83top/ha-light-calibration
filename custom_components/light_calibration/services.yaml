@@ -40,8 +40,8 @@ adjust:
       required: false
       selector:
         number:
-          min: -60
-          max: 60
+          min: -100
+          max: 400
           step: 1
     brightness:
       name: Brightness

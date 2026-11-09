@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from light_calibration import color_math as cm
+from light_calibration.const import TINT_MAX, TINT_MIN
 from light_calibration.calibration import (
     COLOR_HUES,
     count_points,
@@ -489,3 +490,14 @@ def test_red_and_green_do_not_collapse_into_the_same_orange():
         green = profile.command_for_rgb((0, 255, 0), 50)[0]
         assert red != green
         assert cm.rgb_to_hs(green)[0] > 90     # still recognisably green
+
+
+@pytest.mark.parametrize("tint", [TINT_MIN, TINT_MAX])
+def test_command_for_kelvin_at_the_ends_of_the_tint_slider(tint):
+    """The brightness compensation can ask for more than 100% at either end --
+    it has to stop at 100, not wrap or go out of range."""
+    for kelvin in (2700, 6500):
+        profile = CalibrationProfile([CalibrationPoint(kelvin, 80, tint=tint)])
+        rgb, brightness = profile.command_for_kelvin(kelvin, 80)
+        assert rgb == cm.corrected_rgb(kelvin, 0, tint)
+        assert 1 <= brightness <= 100

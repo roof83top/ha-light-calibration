@@ -31,7 +31,7 @@ const DEPTHS = [
 const WHITE_SLIDERS = [
   { key: "warm_cool", label: "Warm / cool", min: -1200, max: 1200, step: 25, unit: "K",
     hint: "orange ↔ blue" },
-  { key: "green_magenta", label: "Magenta / green", min: -60, max: 60, step: 1, unit: "%",
+  { key: "green_magenta", label: "Magenta / green", min: -100, max: 400, step: 1, unit: "%",
     hint: "looks purple? push right" },
   { key: "brightness", label: "Brightness", min: 1, max: 100, step: 1, unit: "%",
     hint: "match the reference" },
