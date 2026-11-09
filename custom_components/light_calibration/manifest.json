@@ -1,7 +1,7 @@
 {
   "domain": "light_calibration",
   "name": "Light Calibration",
-  "version": "2.18.0",
+  "version": "2.18.1",
   "documentation": "https://github.com/ahmadtawakol/ha-light-calibration#readme",
   "issue_tracker": "https://github.com/ahmadtawakol/ha-light-calibration/issues",
   "codeowners": [

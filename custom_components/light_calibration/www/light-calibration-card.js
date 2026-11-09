@@ -953,6 +953,12 @@ async function loadEntityPicker() {
   }
 }
 
+/* Only a colour light has two ways to show a white, and only a backend that
+   reports white_mode offers the choice. */
+function hasWhitesChoice(a) {
+  return a.supports_color !== false && a.white_mode !== undefined;
+}
+
 class LightCalibrationPanel extends HTMLElement {
   constructor() {
     super();
@@ -1632,10 +1638,11 @@ class LightCalibrationPanel extends HTMLElement {
     });
     // The footer link is this card's one action, the way an integrations card
     // puts "21 services" there: a calibrated light opens its details, one with
-    // nothing measured starts measuring.
+    // nothing measured starts measuring -- unless how it shows whites is still
+    // to be chosen, which has to happen before the whites are measured.
     el.querySelector(".act").addEventListener("click", () => {
-      if (item.row.sensor && this._hass.states[item.row.sensor]
-            .attributes.stored_points > 0) {
+      if (item.row.sensor && this._opensDetails(
+            this._hass.states[item.row.sensor].attributes)) {
         this._openDetails(item.row.sensor);
         return;
       }
@@ -1767,6 +1774,11 @@ class LightCalibrationPanel extends HTMLElement {
     this._renderDetails();
   }
 
+  /* Whether the footer action opens Details rather than starting to measure. */
+  _opensDetails(a) {
+    return a.stored_points > 0 || hasWhitesChoice(a);
+  }
+
   _closeDetails() {
     this._details.classList.remove("open");
     this._detailsEntity = null;
@@ -1821,7 +1833,7 @@ class LightCalibrationPanel extends HTMLElement {
     // Only a colour light has two ways to show a white. Hidden when the
     // backend does not report the option at all.
     const whites = d.querySelector(".dwhite");
-    whites.hidden = a.supports_color === false || a.white_mode === undefined;
+    whites.hidden = !hasWhitesChoice(a);
     const mode = d.querySelector(".dwhitemode");
     if (!mode.matches(":focus")) {   // not under an open menu
       mode.value = a.white_mode || "rgb";
@@ -1870,7 +1882,7 @@ class LightCalibrationPanel extends HTMLElement {
     item.state.classList.toggle("warn", calibrated && !on && !(a && a.active));
 
     item.el.classList.toggle("calibrated", calibrated);
-    item.act.textContent = calibrated ? "Details" : "Calibrate";
+    item.act.textContent = a && this._opensDetails(a) ? "Details" : "Calibrate";
     item.sw.hidden = !calibrated;
     item.sw.setAttribute("aria-checked", on ? "true" : "false");
     item.sw.title = on ? "Correction on" : "Correction off";
